@@ -1,0 +1,136 @@
+salt_api:
+
+1./api/v1.1/config_state/
+2./api/v1.1/command/
+3./api/v1.1/key/
+4./api/v1.1/host_state/
+5./api/v1.1/show_return/
+6./api/v1.1/grains_items/
+7./api/v1.1/pillar_data/
+8./api/v1.1/showslscontext/
+
+
+1.使用方法
+python salt.api.py
+
+1.启动后会侦听0.0.0.0:8080端口，可以curl post数据进行接口功能测试
+2.需要在salt-master上执行进行执行，该脚本需要读取/etc/salt/master获取配置信息
+
+2.安全验证
+v1 该api需要设定默认的salt_dir 即file_roots对应的值,默认的配置为SALT_DIR='/srv/salt'。
+v2 该api会在启动时读取一个文件，该文件的的默认存储地点为/tmp/eleme_salt.conf,可修改。
+v3 /tmp/eleme_salt.conf的配置内容为:
+[global] //全局配置，key操作等api接口会读取这个配置下的key，基于key会生成token来做身份认证
+key = RmVk2zDpY5kpBW0M //key的值 可随意填写
+[project] //可选 可不填
+key = haha
+
+v4 token的认证算法:
+	project_key = 'key' //key的值是/tmp/eleme_salt.conf中对应的project下的key值
+	now_time = datetime.datetime.now()
+	hours = [now_time.strftime("%Y-%m-%d-%H"),(now_time + datetime.timedelta(hours = 1)).strftime("%Y-%m-%d-%H"),(now_time + datetime.timedelta(hours = -1)).strftime("%Y-%m-%d-%H")]
+	token_list.append(hashlib.new("md5", project_key+hour).hexdigest())
+	token_list.append(hashlib.new("md5", hour+project_key).hexdigest())
+
+
+
+
+ 
+操作演示:
+1. salt Key操作 (/api/v1.1/key/)
+v1.1 该api提供对salt-key功能的操作，能够查看master上拥有那些minion的key，也可对minion的key进行删除。
+v1.2 该api对key的操作的关键参数为operation,当operation=list时，该api会返回该master所有用的所有的salt-minion。当operation=delete时，需要额外参数即tgt，需要指明tgt的值为那些minion，tgt参数允许填入多个，以','号作为分隔。
+ex:
+查询key:
+	curl -d 'operation=list&token=d22e8e70a6621c50b67103a9f35ef06a' 'http://192.168.67.24:8080/api/v1.1/key/'
+该操作会返回结果:
+{"state": true, "data": ["vpco-ops-saltstack-06.vm"]}
+state:true 代表该操作成功，data:xxx  代表该操作所返回的对应的值。
+删除key:
+curl -d 'operation=delete&token=d22e8e70a6621c50b67103a9f35ef06a&tgt=vpco-ops-saltstack-06.vm' 'http://192.168.67.24:8080/api/v1.1/key/'
+
+返回值为:
+	{"state": true, "data": null}
+该操作会删除对应的key，并且返回目前剩下的key
+
+
+2. salt 应用模板 (/api/v1.1/config_state/)
+
+v1.1 api参数说明:
+	v1 project //需要被应用模板的项目名，该参数主要用来做认证，也可以做项目区分。 
+	v2 tgt // target 需要应用模板的主机
+	v3 sls // sls 需要被应用的模板文件的名字
+	v4 timeout // 超时时间
+
+ex:
+执行应用test.sls模板文件:
+	test.sls内容:
+            httpd:
+             pkg:
+              - installed
+应用test.sls文件来安装httpd:
+	curl -d 'project=eleme&tgt=vpco-ops-saltstack-06&sls=test&timeout=30&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/config_state/'
+返回值:
+	{"state": true, "data": 0} //state为true说明认证通过，data为0说明执行失败,本例中是因为tgt对应在salt-master上的key名写错导致失败
+
+修正后执行:
+	curl -d 'project=eleme&tgt=vpco-ops-saltstack-06.vm&sls=test&timeout=30&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/config_state/'
+
+返回值:
+	{"state": true, "data": "20151223103015167550"} //因为此操作是异步执行，所以不会等待任务执行完毕后返回值，data字段会返回一个jid值，可以使用该jid从 /api/v1.1/show_return/ 接口获取执行状态。
+
+3.查看返回值(/api/v1.1/show_return/)
+v1.1 api参数说明:
+	v1 jid_type //jid_type可以输入两种值 (normal|sls	) 参数值的不同 显示结果的方式不同
+	v2 project 
+	v3 jid //jid有两种值(all|jid) 当jid为all的时候该接口会返回所有执行过任务列表 当jid的值为特定的jid时 会返回对应jid执行的任务详情
+
+ex:
+执行
+	curl -d 'jid_type=normal&jid=20151223103015167550&project=eleme&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/show_return/' 查看之前应用的test.sls的任务详情
+
+返回值:
+	{"state": true, "data": {"vpco-ops-saltstack-06.vm": {"pkg_|-httpd_|-httpd_|-installed": {"comment": "The following packages were installed/updated: httpd.", "name": "httpd", "start_time": "10:30:16.473554", "result": true, "duration": "58625.779 ms", "__run_num__": 0, "changes": {"httpd": {"new": "2.4.6-31.el7.centos.1", "old": ""}, "httpd-tools": {"new": "2.4.6-31.el7.centos.1", "old": ""}}}}}}
+
+当jid_type的值为sls时:
+	{"state": true, "data": {"correct": {"vpco-ops-saltstack-06.vm": {"pkg_|-httpd_|-httpd_|-installed": "The following packages were installed/updated: httpd."}}, "error": {}}}
+
+	
+4.  查看文件内容(/api/v1.1/showslscontext/)
+v1.1 参数说明:
+	v1 project
+	v2 file //file的值为对应的sls文件名称
+
+ex:
+	curl -d 'project=eleme&file=test.sls&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/showslscontext/'
+
+返回值:
+	{"state": true, "data": "httpd:\n    pkg:\n      - installed\n"}
+	
+
+
+5.应用grains (/api/v1.1/grains_items/)
+v1.1 参数说明:
+	v1 project
+	v2 tgt //tgt的值不能为*
+
+ex:
+	curl -d 'project=eleme&tgt=vpco-ops-saltstack-06.vm&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/grains_items/'
+
+返回值:
+	{"state": true, "data": {"vpco-ops-saltstack-06.vm": {"biosversion": "Bochs", "kernel": "Linux", "domain": "vm.elenet.me", "zmqversion": "3.2.5", "kernelrelease": "3.10.0-229.11.1.el7.x86_64", "pythonpath": ["/usr/bin", "/usr/lib/python2.7/site-packages/supervisor-3.1.3-py2.7.egg", "/usr/lib/python2.7/site-packages/meld3-1.0.2-py2.7.egg", "/usr/lib/python2.7/site-packages/setuptools-18.0.1-py2.7.egg", "/usr/lib/python2.7/site-packages/pip-7.0.3-py2.7.egg", "/usr/lib64/python27.zip", "/usr/lib64/python2.7", "/usr/lib64/python2.7/plat-linux2", "/usr/lib64/python2.7/lib-tk", "/usr/lib64/python2.7/lib-old", "/usr/lib64/python2.7/lib-dynload", "/usr/lib64/python2.7/site-packages", "/usr/lib64/python2.7/site-packages/gtk-2.0", "/usr/lib/python2.7/site-packages"], "serialnumber": "7198a37b-84b0-4518-9b9c-01bc67f85bcb", "ip_interfaces": {"lo": ["127.0.0.1", "192.168.67.23"], "docker0": ["192.168.128.1"], "eth0": ["192.168.67.25"]}, "shell": "/bin/sh", "mem_total": 993, "saltversioninfo": [2014, 7, 5, 0], "SSDs": [], "id": "vpco-ops-saltstack-06.vm", "osrelease": "7.1.1503", "ps": "ps -efH", "locale_info": {"defaultlanguage": "en_US", "defaultencoding": "UTF-8"}, "fqdn": "vpco-ops-saltstack-06.vm.elenet.me", "ip6_interfaces": {"lo": [], "docker0": [], "eth0": []}, "num_cpus": 1, "hwaddr_interfaces": {"lo": "00:00:00:00:00:00", "docker0": "56:84:7a:fe:97:99", "eth0": "52:54:00:a4:a7:e4"}, "virtual": "kvm", "osfullname": "CentOS Linux", "master": "vpco-zoo-ranger-05.vm.elenet.me", "lsb_distrib_id": "CentOS Linux", "selinux": {"enforced": "Disabled", "enabled": false}, "cpu_flags": ["fpu", "de", "pse", "tsc", "msr", "pae", "mce", "cx8", "apic", "sep", "mtrr", "pge", "mca", "cmov", "pse36", "clflush", "mmx", "fxsr", "sse", "sse2", "ht", "syscall", "nx", "lm", "rep_good", "nopl", "pni", "cx16", "popcnt", "hypervisor", "lahf_lm"], "localhost": "vpco-ops-saltstack-06.vm", "ipv4": ["127.0.0.1", "192.168.128.1", "192.168.67.23", "192.168.67.25"], "fqdn_ip4": ["192.168.67.25"], "fqdn_ip6": [], "nodename": "vpco-ops-saltstack-06.vm", "saltversion": "2014.7.5", "ipv6": [], "saltpath":/usr/lib/python2.7/site-packages/salt", "biosreleasedate": "01/01/2011", "osmajorrelease": "7", "os_family": "RedHat", "oscodename": "Core", "osfinger": "CentOS Linux-7", "pythonversion": [2, 7, 5, "final", 0], "manufacturer": "Bochs", "roles": [], "num_gpus": 1, "ip4_interfaces": {"lo": ["127.0.0.1", "192.168.67.23"], "docker0": ["192.168.128.1"], "eth0": ["192.168.67.25"]}, "server_id": 1468732272, "cpu_model": "QEMU Virtual CPU version 1.2.0", "host": "vpco-ops-saltstack-06", "pythonexecutable": "/usr/bin/python", "productname": "Bochs", "osarch": "x86_64", "cpuarch": "x86_64", "osrelease_info": [7, 1, 1503], "gpus": [{"model": "GD 5446", "vendor": "unknown"}], "path": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", "machine_id": "3f57f163dfaf1ec9ed891518d1d2fafe", "os": "CentOS"}}}
+
+6. Pillar(/api/v1.1/pillar_data/)
+	参数以及使用方法与grains相同
+
+7.执行命令(/api/v1.1/command/)
+	此接口已禁用，不做说明
+8.查看主机状态(/api/v1.1/host_state/)
+v1.1 参数说明:
+	v1 list //此参数接受的值为(up|down)
+
+ex:
+	curl -d 'list=up&token=01783b7db0ae2d669136905eb0258438' 'http://192.168.67.24:8080/api/v1.1/host_state/'
+
+返回值:
+	{"state": true, "data": ["vpco-ops-saltstack-06.vm"]} //data字段对应的值就是对应的up或者down的主机列表
